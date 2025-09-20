@@ -1,0 +1,35 @@
+# 编译输出
+dist/
+build/
+*.tsbuildinfo
+
+# 依赖
+node_modules/
+
+# 日志文件
+*.log
+logs/
+
+# 覆盖率报告
+coverage/
+
+# 临时文件
+tmp/
+temp/
+
+# 配置文件（根据需要调整）
+.env
+.env.local
+.env.*.local
+
+# IDE文件
+.vscode/
+.idea/
+
+# OS生成的文件
+.DS_Store
+Thumbs.db
+
+# 其他
+*.min.js
+*.min.css
