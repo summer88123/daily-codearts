@@ -1,4 +1,4 @@
-import { HuaweiCloudConfig, IssueItem, ProjectMember, WorkHour } from '../types';
+import { HuaweiCloudConfig, IssueItem, IterationInfo, ProjectMember, WorkHour } from '../types';
 import { ApiService } from './api.service';
 
 /**
@@ -80,6 +80,70 @@ export class BusinessService {
 
     const allMembers = membersResponse.data?.members || [];
     return allMembers.filter((member) => member.role_id === roleId);
+  }
+
+  /**
+   * 获取指定日期正在进行中的迭代列表
+   * @param projectId 项目ID
+   * @param targetDate 目标日期，格式：YYYY-MM-DD
+   * @returns 正在进行中的迭代列表
+   */
+  async getActiveIterationsOnDate(projectId: string, targetDate: string): Promise<IterationInfo[]> {
+    const iterationsResponse = await this.apiService.getIterations(projectId, {
+      include_deleted: false,
+    });
+
+    if (!iterationsResponse.success) {
+      throw new Error(`获取迭代列表失败: ${iterationsResponse.error || '未知错误'}`);
+    }
+
+    const iterations = iterationsResponse.data?.iterations || [];
+    const targetDateTime = new Date(targetDate).getTime();
+
+    // 过滤出在目标日期正在进行中的迭代
+    return iterations.filter((iteration) => {
+      // 检查迭代状态是否为进行中 (1)
+      if (iteration.status !== '1') {
+        return false;
+      }
+
+      // 检查目标日期是否在迭代时间范围内
+      const beginTime = new Date(iteration.begin_time).getTime();
+      const endTime = new Date(iteration.end_time).getTime();
+
+      return targetDateTime >= beginTime && targetDateTime <= endTime;
+    });
+  }
+
+  /**
+   * 根据多个迭代ID和用户ID列表查询工作量列表（仅Task和Story）
+   * @param projectId 项目ID
+   * @param iterationIds 迭代ID列表
+   * @param userIds 用户ID列表
+   * @returns Task和Story类型的工作项列表
+   */
+  async getWorkloadByIterationsAndUsers(
+    projectId: string,
+    iterationIds: number[],
+    userIds: string[]
+  ): Promise<IssueItem[]> {
+    if (iterationIds.length === 0) {
+      return [];
+    }
+
+    const issuesResponse = await this.apiService.getIssues(projectId, {
+      iteration_ids: iterationIds,
+      tracker_ids: [2, 7], // 2=Task(任务), 7=Story
+      assigned_ids: userIds,
+      limit: 100,
+      offset: 0,
+    });
+
+    if (!issuesResponse.success) {
+      throw new Error(`获取工作项失败: ${issuesResponse.error || '未知错误'}`);
+    }
+
+    return issuesResponse.data?.issues || [];
   }
 
   /**

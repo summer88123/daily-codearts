@@ -5,28 +5,10 @@ import { HuaweiCloudConfig } from './types';
 // 加载环境变量
 dotenv.config();
 
-/**
- * 将迭代状态代码转换为可读文本
- */
-function getIterationStatusText(status: string): string {
-  switch (status) {
-    case '0':
-      return '未启动';
-    case '1':
-      return '进行中';
-    case '2':
-      return '已结束';
-    case 'open':
-      return '开放（老数据）';
-    default:
-      return `未知状态(${status})`;
-  }
-}
-
 async function main() {
   try {
-    console.log('开始统计日报...');
-
+    const targetDate = '2025-09-22'; // 示例日期，可以从环境变量获取
+    console.log(`开始统计 ${targetDate} 的日报...`);
     // 从环境变量获取项目ID和角色ID
     const projectId = process.env.PROJECT_ID;
     const roleId = process.env.ROLE_ID;
@@ -40,9 +22,6 @@ async function main() {
       console.error('错误: 未设置环境变量 ROLE_ID');
       process.exit(1);
     }
-
-    console.log(`项目ID: ${projectId}`);
-    console.log(`角色ID: ${roleId}`);
 
     // 初始化华为云CodeArts API服务
     const config: HuaweiCloudConfig = {
@@ -58,23 +37,15 @@ async function main() {
     const businessService = new BusinessService(config);
 
     // 获取指定角色的成员列表
-    console.log(`正在获取项目ID为 ${projectId}，角色ID为 ${roleId} 的成员列表...`);
-
     const roleMembers = await businessService.getMembersByRoleId(projectId, parseInt(roleId));
 
     // 获取指定角色用户的工时数据
-    console.log(`\n正在获取角色ID为 ${roleId} 的用户工时数据...`);
 
     if (roleMembers.length === 0) {
       console.log('未找到指定角色的用户，跳过工时查询');
     } else {
       // 提取指定角色用户的ID列表
       const roleUserIds = roleMembers.map((member) => member.user_id);
-      console.log(`找到 ${roleUserIds.length} 个指定角色的用户，开始查询工时...`);
-
-      // 使用新的工时统计方法查询指定日期的工时
-      const targetDate = '2025-09-19'; // 示例日期，可以从环境变量获取
-      console.log(`\n正在统计 ${targetDate} 的工时数据...`);
 
       try {
         const dailyStats = await businessService.getDailyWorkHourStats(
@@ -82,12 +53,6 @@ async function main() {
           roleUserIds,
           targetDate
         );
-
-        console.log(`\n${dailyStats.date} 工时统计结果:`);
-        console.log('='.repeat(50));
-        console.log(`   总工时: ${dailyStats.totalHours} 小时`);
-        console.log(`   工时条目数: ${dailyStats.totalEntries} 条`);
-
         // 提取当天有工时记录的工作项ID
         const activeIssueIds = new Set<number>();
         dailyStats.userStats.forEach((userStat) => {
@@ -96,61 +61,124 @@ async function main() {
           });
         });
 
-        console.log(`\n当天有进展的工作项数量: ${activeIssueIds.size} 个`);
+        // 收集Bug工作项的工时记录
+        const bugWorkHours: Array<{
+          title: string;
+          nick_name: string;
+          work_hours: string;
+        }> = [];
 
-        // 查询指定迭代的任务和故事类型工作项
-        const targetIterationId = 21734970; // V2510迭代
+        dailyStats.userStats.forEach((userStat) => {
+          userStat.workHours.forEach((workHour) => {
+            // issue_type为"3"表示缺陷/Bug
+            if (
+              workHour.issue_type === '缺陷' ||
+              workHour.issue_type === '3' ||
+              workHour.issue_type === 'Bug'
+            ) {
+              bugWorkHours.push({
+                title: workHour.subject,
+                nick_name: workHour.nick_name,
+                work_hours: workHour.work_hours_num,
+              });
+            }
+          });
+        });
 
-        console.log(`\n正在查询迭代ID为 ${targetIterationId} 中指定角色的任务和故事...`);
-        const issues = await businessService.getWorkloadByIterationAndUsers(
+        console.log(`\n${dailyStats.date} 日报:`);
+        console.log('='.repeat(50));
+
+        // 按人展示一下工时
+        dailyStats.userStats.forEach((userStat) => {
+          console.log(`\n${userStat.userName} 工时: ${userStat.totalHours}小时`);
+          userStat.workHours.forEach((workHour) => {
+            console.log(
+              ` - ${workHour.subject} (${workHour.issue_type}) ${workHour.work_hours_num}小时`
+            );
+          });
+        });
+        let index = 1;
+        // 显示Bug工作项列表
+        if (bugWorkHours.length > 0) {
+          console.log(`\n${index}.Bug跟进: ${bugWorkHours.length}项`);
+          bugWorkHours.forEach((bug) => {
+            console.log(` - ${bug.title} ${bug.nick_name}`);
+          });
+          index++;
+        }
+
+        const activeIterations = await businessService.getActiveIterationsOnDate(
           projectId,
-          targetIterationId,
+          targetDate
+        );
+
+        if (activeIterations.length === 0) {
+          console.log('没有找到正在进行中的迭代');
+          return;
+        }
+
+        const activeIterationIds = activeIterations.map((iteration) => iteration.id);
+
+        const issues = await businessService.getWorkloadByIterationsAndUsers(
+          projectId,
+          activeIterationIds,
           roleUserIds
         );
 
         // 过滤出当天有进展的工作项
         const activeIssues = issues.filter((issue) => activeIssueIds.has(issue.id));
 
-        console.log('='.repeat(80));
-
-        if (activeIssues.length === 0) {
-          console.log('当天没有工作项有进展');
-        } else {
-          // 显示当天有进展的工作项详情
-          activeIssues.forEach((issue, index) => {
-            console.log(`${index + 1}. [${issue.tracker.name}] ${issue.name}`);
-            console.log(`   状态: ${issue.status.name}`);
-            console.log(`   预计工时: ${issue.expected_work_hours || 0} 小时`);
-            console.log(`   实际工时: ${issue.actual_work_hours || 0} 小时`);
-
-            // 显示该工作项当天的工时详情
-            const issueWorkHours = dailyStats.userStats
-              .flatMap((userStat) => userStat.workHours)
-              .filter((workHour) => workHour.issue_id === issue.id);
-
-            if (issueWorkHours.length > 0) {
-              console.log(`   当天工时记录:`);
-              issueWorkHours.forEach((workHour) => {
-                console.log(
-                  `     - ${workHour.nick_name}: ${workHour.work_hours_num}小时 (${workHour.summary})`
-                );
-              });
+        if (activeIssues.length !== 0) {
+          // 按迭代分组显示当天有进展的工作项
+          const activeIssuesByIteration = new Map<number, typeof activeIssues>();
+          activeIssues.forEach((issue) => {
+            const iterationId = issue.iteration.id;
+            if (!activeIssuesByIteration.has(iterationId)) {
+              activeIssuesByIteration.set(iterationId, []);
             }
-            console.log('');
+            activeIssuesByIteration.get(iterationId)!.push(issue);
+          });
+
+          // 按迭代分组所有工作项（用于整体统计）
+          const issuesByIteration = new Map<number, typeof issues>();
+          issues.forEach((issue) => {
+            const iterationId = issue.iteration.id;
+            if (!issuesByIteration.has(iterationId)) {
+              issuesByIteration.set(iterationId, []);
+            }
+            issuesByIteration.get(iterationId)!.push(issue);
+          });
+
+          // 只显示当天有进展的迭代
+          activeIterations.forEach((iteration) => {
+            const iterationActiveIssues = activeIssuesByIteration.get(iteration.id) || [];
+
+            // 如果该迭代当天没有进展的工作项，跳过不显示
+            if (iterationActiveIssues.length === 0) {
+              return;
+            }
+
+            // 显示整体统计
+            const iterationIssues = issuesByIteration.get(iteration.id) || [];
+            if (iterationIssues.length > 0) {
+              const iterationStats = businessService.calculateWorkProgress(iterationIssues);
+              console.log(`${index}.${iteration.name} ${iterationStats.overallCompletionRate}%`);
+              index++;
+            }
+
+            // 显示当天有进展的工作项详情
+            iterationActiveIssues.forEach((issue) => {
+              const doneRate = issue.done_ratio
+                ? issue.done_ratio
+                : issue.expected_work_hours
+                  ? issue.actual_work_hours / issue.expected_work_hours
+                  : 0;
+              const displayDoneRate = Math.round(Math.min(doneRate * 100, 100));
+              console.log(` - ${issue.name} ${displayDoneRate}% ${issue.assigned_user.nick_name}`);
+            });
           });
         }
-
-        // 计算并显示整体进度统计
-        if (issues.length > 0) {
-          const overallProgressStats = businessService.calculateWorkProgress(issues);
-
-          console.log('\n' + '='.repeat(80));
-          console.log('整体工作项统计结果:');
-          console.log(`   任务总数: ${overallProgressStats.totalCount} 个`);
-          console.log(`   预计工时总和: ${overallProgressStats.totalExpectedHours} 小时`);
-          console.log(`   实际工时总和: ${overallProgressStats.totalActualHours} 小时`);
-          console.log(`   工时完成率: ${overallProgressStats.overallCompletionRate}%`);
-        }
+        console.log(`${index}.工时: ${dailyStats.totalHours}`);
       } catch (error) {
         console.error('工时统计查询失败:', error);
       }
