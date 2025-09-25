@@ -7,7 +7,7 @@ dotenv.config();
 
 async function main() {
   try {
-    const targetDate = '2025-09-22'; // 示例日期，可以从环境变量获取
+    const targetDate = '2025-09-25'; // 示例日期，可以从环境变量获取
     console.log(`开始统计 ${targetDate} 的日报...`);
     // 从环境变量获取项目ID和角色ID
     const projectId = process.env.PROJECT_ID;
@@ -61,12 +61,15 @@ async function main() {
           });
         });
 
-        // 收集Bug工作项的工时记录
-        const bugWorkHours: Array<{
-          title: string;
-          nick_name: string;
-          work_hours: string;
-        }> = [];
+        // 收集Bug工作项的工时记录，使用Map去重
+        const bugWorkHoursMap = new Map<
+          string,
+          {
+            title: string;
+            users: Set<string>;
+            totalHours: number;
+          }
+        >();
 
         dailyStats.userStats.forEach((userStat) => {
           userStat.workHours.forEach((workHour) => {
@@ -76,14 +79,30 @@ async function main() {
               workHour.issue_type === '3' ||
               workHour.issue_type === 'Bug'
             ) {
-              bugWorkHours.push({
-                title: workHour.subject,
-                nick_name: workHour.nick_name,
-                work_hours: workHour.work_hours_num,
-              });
+              const key = workHour.subject;
+              const hours = parseFloat(workHour.work_hours_num) || 0;
+
+              if (bugWorkHoursMap.has(key)) {
+                const existing = bugWorkHoursMap.get(key)!;
+                existing.users.add(workHour.nick_name);
+                existing.totalHours += hours;
+              } else {
+                bugWorkHoursMap.set(key, {
+                  title: workHour.subject,
+                  users: new Set([workHour.nick_name]),
+                  totalHours: hours,
+                });
+              }
             }
           });
         });
+
+        // 转换为数组格式
+        const bugWorkHours = Array.from(bugWorkHoursMap.values()).map((bug) => ({
+          title: bug.title,
+          nick_name: Array.from(bug.users).join('、'),
+          work_hours: bug.totalHours.toString(),
+        }));
 
         console.log(`\n${dailyStats.date} 日报:`);
         console.log('='.repeat(50));
