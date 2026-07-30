@@ -228,9 +228,7 @@ async function queryDailyReport(
           const doneRate = issue.expected_work_hours
             ? issue.actual_work_hours / issue.expected_work_hours
             : 0;
-          const displayDoneRate = issue.done_ratio
-            ? issue.done_ratio
-            : Math.round(Math.min(doneRate * 100, 100));
+          const displayDoneRate = issue.done_ratio ? issue.done_ratio : Math.round(doneRate * 100);
 
           return {
             name: issue.name,
