@@ -341,12 +341,92 @@ export async function storySingleCommand(
   }
 }
 
+export interface StoryDetailImage {
+  uri: string;
+  localPath?: string;
+  error?: string;
+}
+
 export interface StoryDetailResult {
   id: number;
   success: boolean;
   detail?: IssueDetail;
   comments?: IssueCommentV4[];
+  images?: StoryDetailImage[];
   error?: string;
+}
+
+// issue 内容中图片地址（下载接口要求 v1 前缀，业务层自动替换 v2）
+const IMAGE_URI_PATTERN = /\/v[12]\/upload\/[A-Za-z0-9]{1,32}\/\d{6}\/[A-Za-z0-9]+\.[A-Za-z0-9]+/g;
+
+function extractImageUris(texts: Array<string | undefined>): string[] {
+  const uris = new Set<string>();
+  texts.forEach((text) => {
+    if (!text) {
+      return;
+    }
+    (text.match(IMAGE_URI_PATTERN) || []).forEach((uri) => uris.add(uri));
+  });
+  return [...uris];
+}
+
+/**
+ * 并发下载详情与评论中的图片，结果写入各 result.images
+ */
+async function downloadIssueImages(
+  businessService: BusinessService,
+  projectId: string,
+  results: StoryDetailResult[]
+): Promise<{ total: number; failed: number }> {
+  const urisByResult = new Map<StoryDetailResult, string[]>();
+
+  results.forEach((result) => {
+    if (!result.success) {
+      return;
+    }
+    const uris = extractImageUris([
+      result.detail?.description,
+      ...(result.comments || []).map((c) => c.comment),
+    ]);
+    if (uris.length > 0) {
+      urisByResult.set(result, uris);
+    }
+  });
+
+  const uniqueUris = [...new Set([...urisByResult.values()].flat())];
+  if (uniqueUris.length === 0) {
+    return { total: 0, failed: 0 };
+  }
+
+  const pathByUri = new Map<string, string | Error>();
+  const concurrency = 5;
+
+  for (let i = 0; i < uniqueUris.length; i += concurrency) {
+    const batch = uniqueUris.slice(i, i + concurrency);
+    await Promise.all(
+      batch.map(async (uri) => {
+        try {
+          pathByUri.set(uri, await businessService.downloadIssueImage(projectId, uri));
+        } catch (error: unknown) {
+          pathByUri.set(uri, error instanceof Error ? error : new Error(String(error)));
+        }
+      })
+    );
+  }
+
+  let failed = 0;
+  urisByResult.forEach((uris, result) => {
+    result.images = uris.map((uri) => {
+      const target = pathByUri.get(uri);
+      if (target instanceof Error) {
+        failed++;
+        return { uri, error: target.message };
+      }
+      return { uri, localPath: target };
+    });
+  });
+
+  return { total: uniqueUris.length, failed };
 }
 
 function statusColor(statusName: string): (text: string) => string {
@@ -376,6 +456,25 @@ function formatTimestamp(ts: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/**
+ * 将 HTML 内容转为纯文本，图片标签替换为 [图片N] 占位符（N 对应图片列表序号）
+ */
+function renderHtmlText(html: string, imageIndex: Map<string, number>): string {
+  return html
+    .replace(/<img[^>]*>/gi, (tag) => {
+      const match = tag.match(IMAGE_URI_PATTERN);
+      const index = match ? imageIndex.get(match[0]) : undefined;
+      return index ? `[图片${index}]` : '[图片]';
+    })
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
 function outputDetailConsole(
   results: StoryDetailResult[],
   projectId: string,
@@ -389,6 +488,7 @@ function outputDetailConsole(
     }
     const d = result.detail;
     const status = d.status?.name || '-';
+    const imageIndex = new Map((result.images || []).map((img, i) => [img.uri, i + 1]));
     logger.info(
       pc.bold(`[${index + 1}] #${d.id}  ${d.name}`) + (d.deleted ? pc.red(' [已删除]') : '')
     );
@@ -397,22 +497,24 @@ function outputDetailConsole(
     );
     logger.info(`  迭代: ${d.iteration?.name || '-'}\t领域: ${d.domain?.name || '-'}`);
     logger.info(`  链接: ${issueLink(projectId, d.id)}`);
-    console.log(d.description);
     if (d.description) {
       logger.info(`  描述:`);
-      const text = d.description
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-        .replace(/<[^>]+>/g, '')
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0)
-        .join('\n');
+      const text = renderHtmlText(d.description, imageIndex);
       if (text) {
         text.split('\n').forEach((line) => {
           logger.info(pc.gray(`    ${line}`));
         });
       }
+    }
+
+    if (result.images && result.images.length > 0) {
+      logger.info(`  图片 (${result.images.length}):`);
+      result.images.forEach((img, i) => {
+        const line = img.error
+          ? `${i + 1}. ✗ ${img.uri}（${img.error}）`
+          : `${i + 1}. ${img.localPath || '-'}`;
+        logger.info(pc.gray(`    ${line}`));
+      });
     }
 
     if (withComments) {
@@ -423,8 +525,7 @@ function outputDetailConsole(
         result.comments.forEach((c) => {
           const time = formatTimestamp(c.timestamp);
           const author = c.user?.nick_name || c.user?.user_name || '匿名';
-          console.log(c.comment);
-          const text = c.comment.replace(/<[^>]+>/g, '').trim();
+          const text = renderHtmlText(c.comment, imageIndex);
           logger.info(pc.gray(`    [${time}] ${author}: ${text}`));
         });
       }
@@ -483,6 +584,14 @@ export async function storyDetailCommand(
         }
       }
     });
+  }
+
+  const imageSpinner = ora('正在解析并下载工作项图片...').start();
+  const { total, failed } = await downloadIssueImages(businessService, projectId, results);
+  if (total > 0) {
+    imageSpinner.succeed(`图片处理完成：共 ${total} 张${failed > 0 ? `，失败 ${failed} 张` : ''}`);
+  } else {
+    imageSpinner.stop();
   }
 
   if (outputFormat === 'json') {

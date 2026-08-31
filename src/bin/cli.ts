@@ -160,7 +160,7 @@ storyCmd
 
 storyCmd
   .command('detail <ids...>')
-  .description('查询工作项详情，支持多个 ID 和可选评论查询')
+  .description('查询工作项详情，支持多个 ID 和可选评论查询，自动下载内容中的图片')
   .option('-c, --with-comments', '同时查询每个工作项的评论')
   .action(async (ids, options, command) => {
     const cliOptions = {

@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { IssueDetail } from '../types';
+import { getCacheRootDir } from '../utils/cache-dir';
 import { logger } from '../utils/logger';
 import { ChartModule } from './chart.interface';
 import macarons from './macarons';
@@ -33,20 +34,7 @@ export function renderReport(
   const filename = `rebug-report-${timestamp}.html`;
 
   // 如果未指定输出目录，使用系统 cache 目录
-  let targetDir = outputDir;
-  if (!targetDir) {
-    const os = require('os');
-    const platform = process.platform;
-    if (platform === 'darwin') {
-      targetDir = path.join(os.homedir(), 'Library', 'Caches', 'hecom-codearts');
-    } else if (platform === 'linux') {
-      targetDir = path.join(os.homedir(), '.cache', 'hecom-codearts');
-    } else if (platform === 'win32') {
-      targetDir = path.join(os.homedir(), 'AppData', 'Local', 'Temp', 'hecom-codearts');
-    } else {
-      targetDir = path.join(os.tmpdir(), 'hecom-codearts');
-    }
-  }
+  const targetDir = outputDir || getCacheRootDir();
 
   // 确保目录存在
   if (!fs.existsSync(targetDir)) {

@@ -1,4 +1,4 @@
-import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig } from 'axios';
 import {
   AddIssueNotesRequest,
   AddIssueNotesResponse,
@@ -364,6 +364,7 @@ export class ApiService {
         headers: options.headers,
         params: options.params,
         data: options.data,
+        responseType: options.responseType,
       };
 
       const response = await this.client.request(config);
@@ -378,7 +379,7 @@ export class ApiService {
         return {
           success: false,
           data: null,
-          error: error.response?.data?.error_msg || error.response?.data?.message || error.message,
+          error: this.extractErrorMessage(error),
         };
       }
       return {
@@ -387,6 +388,28 @@ export class ApiService {
         error: String(error),
       };
     }
+  }
+
+  /**
+   * 提取错误信息（兼容 JSON 与二进制响应体）
+   */
+  private extractErrorMessage(error: AxiosError): string {
+    const data: unknown = error.response?.data;
+    if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+      try {
+        const buffer =
+          data instanceof ArrayBuffer ? Buffer.from(data) : Buffer.from(data as Uint8Array);
+        const parsed = JSON.parse(buffer.toString('utf-8')) as {
+          error_msg?: string;
+          message?: string;
+        };
+        return parsed.error_msg || parsed.message || error.message;
+      } catch {
+        return error.message;
+      }
+    }
+    const dataObj = data as { error_msg?: string; message?: string } | undefined;
+    return dataObj?.error_msg || dataObj?.message || error.message;
   }
 
   /**
@@ -452,6 +475,19 @@ export class ApiService {
     return this.request(`/v4/projects/${projectId}/issues/${issueId}/comments`, {
       method: 'GET',
       params: { offset, limit },
+    });
+  }
+
+  /**
+   * 下载工作项中上传的图片文件（返回二进制内容）
+   * @param projectId 项目ID
+   * @param imageUri 图片URI，格式 /v1/upload/{project_id}/{yyyymm}/{file}
+   */
+  async downloadImageFile(projectId: string, imageUri: string): Promise<ApiResponse<ArrayBuffer>> {
+    return this.request<ArrayBuffer>(`/v4/projects/${projectId}/image-file`, {
+      method: 'GET',
+      params: { image_uri: imageUri },
+      responseType: 'arraybuffer',
     });
   }
 

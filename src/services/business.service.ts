@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   AllWorkHourStats,
   BugFixData,
@@ -25,6 +27,7 @@ import {
   WorkProgressStats,
 } from '../types';
 import { logger } from '../utils/logger';
+import { getCacheRootDir } from '../utils/cache-dir';
 import { ApiService } from './api.service';
 
 /**
@@ -1085,6 +1088,32 @@ export class BusinessService {
     }
 
     return results;
+  }
+
+  /**
+   * 下载工作项中的图片并保存到系统缓存目录（已存在时直接复用缓存）
+   * @param projectId 项目ID
+   * @param imageUri 图片URI，issue 内容中为 /v2/upload 前缀，下载接口要求 /v1，自动替换
+   * @returns 图片本地文件路径
+   */
+  async downloadIssueImage(projectId: string, imageUri: string): Promise<string> {
+    const normalizedUri = imageUri.replace('/v2/upload/', '/v1/upload/');
+    const relativePath =
+      normalizedUri.replace(/^\/v1\/upload\//, '') || path.basename(normalizedUri);
+    const targetPath = path.join(getCacheRootDir(), 'issue-images', relativePath);
+
+    if (fs.existsSync(targetPath) && fs.statSync(targetPath).size > 0) {
+      return targetPath;
+    }
+
+    const response = await this.apiService.downloadImageFile(projectId, normalizedUri);
+    if (!response.success || !response.data || response.data.byteLength === 0) {
+      throw new Error(response.error || '未知错误');
+    }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.from(response.data));
+    return targetPath;
   }
 
   /**

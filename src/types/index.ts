@@ -111,6 +111,7 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   params?: Record<string, unknown>;
   data?: unknown;
+  responseType?: 'arraybuffer' | 'blob' | 'document' | 'json' | 'text' | 'stream';
 }
 
 export interface ProjectQueryParams {
