@@ -347,12 +347,19 @@ export interface StoryDetailImage {
   error?: string;
 }
 
+export interface StoryDetailAttachment {
+  name: string; // 附件文件名
+  localPath?: string; // 下载成功后的本地路径
+  error?: string; // 下载失败原因
+}
+
 export interface StoryDetailResult {
   id: number;
   success: boolean;
   detail?: IssueDetail;
   comments?: IssueCommentV4[];
   images?: StoryDetailImage[];
+  attachments?: StoryDetailAttachment[];
   error?: string;
 }
 
@@ -429,6 +436,53 @@ async function downloadIssueImages(
   return { total: uniqueUris.length, failed };
 }
 
+/**
+ * 并发下载详情中的附件，结果写入各 result.attachments
+ */
+async function downloadIssueAttachments(
+  businessService: BusinessService,
+  projectId: string,
+  results: StoryDetailResult[]
+): Promise<{ total: number; failed: number }> {
+  const tasks = results.flatMap((result) =>
+    (result.success ? result.detail?.accessories || [] : []).map((accessory, index) => ({
+      result,
+      accessory,
+      index,
+    }))
+  );
+  if (tasks.length === 0) {
+    return { total: 0, failed: 0 };
+  }
+
+  tasks.forEach(({ result }) => {
+    result.attachments = (result.detail?.accessories || []).map((a) => ({ name: a.file_name }));
+  });
+
+  let failed = 0;
+  const concurrency = 5;
+
+  for (let i = 0; i < tasks.length; i += concurrency) {
+    await Promise.all(
+      tasks.slice(i, i + concurrency).map(async ({ result, accessory, index }) => {
+        const item = result.attachments![index];
+        try {
+          item.localPath = await businessService.downloadIssueAttachment(
+            projectId,
+            result.id,
+            accessory
+          );
+        } catch (error: unknown) {
+          failed++;
+          item.error = error instanceof Error ? error.message : String(error);
+        }
+      })
+    );
+  }
+
+  return { total: tasks.length, failed };
+}
+
 function statusColor(statusName: string): (text: string) => string {
   const map: Record<string, (text: string) => string> = {
     进行中: pc.cyan,
@@ -475,6 +529,31 @@ function renderHtmlText(html: string, imageIndex: Map<string, number>): string {
     .join('\n');
 }
 
+// 计算终端显示宽度：ANSI 颜色序列不计宽，中日韩及全角字符按 2 列
+function displayWidth(text: string): number {
+  let width = 0;
+  let inAnsi = false;
+  for (const char of text) {
+    if (char === '\x1b') {
+      inAnsi = true;
+      continue;
+    }
+    if (inAnsi) {
+      if (char === 'm') {
+        inAnsi = false;
+      }
+      continue;
+    }
+    width += char.charCodeAt(0) > 0xff ? 2 : 1;
+  }
+  return width;
+}
+
+// 按列宽填充空格（列间至少 4 空格），替代制表符以避免中文内容下错位
+function padCell(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(4, width - displayWidth(text) + 4));
+}
+
 function outputDetailConsole(
   results: StoryDetailResult[],
   projectId: string,
@@ -492,10 +571,26 @@ function outputDetailConsole(
     logger.info(
       pc.bold(`[${index + 1}] #${d.id}  ${d.name}`) + (d.deleted ? pc.red(' [已删除]') : '')
     );
+    const defectType =
+      d.tracker?.id === IssueTrackerId.BUG
+        ? `缺陷类型: ${
+            (d.new_custom_fields || []).find((f) => f.custom_field === CustomFieldId.DEFECT_TYPE)
+              ?.value || '-'
+          }`
+        : '';
+    const statusCell = `状态: ${statusColor(status)(status)}`;
+    const typeCell = `类型: ${d.tracker?.name || '-'}`;
+    const iterationCell = `迭代: ${d.iteration?.name || '-'}`;
+    const domainCell = `领域: ${d.domain?.name || '-'}`;
+    const firstColWidth = Math.max(displayWidth(statusCell), displayWidth(iterationCell));
+    const secondColWidth = Math.max(displayWidth(typeCell), displayWidth(domainCell));
     logger.info(
-      `  状态: ${statusColor(status)(status)}\t类型: ${d.tracker?.name || '-'}\t处理人: ${d.assigned_user?.nick_name || d.assigned_user?.name || '-'}`
+      `  ${padCell(statusCell, firstColWidth)}${padCell(typeCell, secondColWidth)}处理人: ${
+        d.assigned_user?.nick_name || d.assigned_user?.name || '-'
+      }`
     );
-    logger.info(`  迭代: ${d.iteration?.name || '-'}\t领域: ${d.domain?.name || '-'}`);
+    const domainPart = defectType ? padCell(domainCell, secondColWidth) : domainCell;
+    logger.info(`  ${padCell(iterationCell, firstColWidth)}${domainPart}${defectType}`);
     logger.info(`  链接: ${issueLink(projectId, d.id)}`);
     if (d.description) {
       logger.info(`  描述:`);
@@ -513,6 +608,16 @@ function outputDetailConsole(
         const line = img.error
           ? `${i + 1}. ✗ ${img.uri}（${img.error}）`
           : `${i + 1}. ${img.localPath || '-'}`;
+        logger.info(pc.gray(`    ${line}`));
+      });
+    }
+
+    if (result.attachments && result.attachments.length > 0) {
+      logger.info(`  附件 (${result.attachments.length}):`);
+      result.attachments.forEach((att, i) => {
+        const line = att.error
+          ? `${i + 1}. ✗ ${att.name}（${att.error}）`
+          : `${i + 1}. ${att.name} -> ${att.localPath || '-'}`;
         logger.info(pc.gray(`    ${line}`));
       });
     }
@@ -592,6 +697,18 @@ export async function storyDetailCommand(
     imageSpinner.succeed(`图片处理完成：共 ${total} 张${failed > 0 ? `，失败 ${failed} 张` : ''}`);
   } else {
     imageSpinner.stop();
+  }
+
+  const attachmentSpinner = ora('正在下载工作项附件...').start();
+  const attachmentStats = await downloadIssueAttachments(businessService, projectId, results);
+  if (attachmentStats.total > 0) {
+    attachmentSpinner.succeed(
+      `附件处理完成：共 ${attachmentStats.total} 个${
+        attachmentStats.failed > 0 ? `，失败 ${attachmentStats.failed} 个` : ''
+      }`
+    );
+  } else {
+    attachmentSpinner.stop();
   }
 
   if (outputFormat === 'json') {

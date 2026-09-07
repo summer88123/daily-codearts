@@ -377,9 +377,25 @@ export interface IssueTag {
   name: string;
 }
 
+export interface IssueAccessory {
+  id: number; // 附件记录id
+  attachment_id: number; // 附件id，下载附件接口使用
+  container_id: number; // 所属工作项id
+  project_id: string | null; // 项目id
+  container_type: string; // 挂载对象类型，如 Issue
+  file_name: string; // 原始文件名
+  disk_file_name: string; // 磁盘存储文件名
+  digest: string; // 文件摘要
+  creator_num_id: number; // 创建人数字id
+  created_time: number; // 上传时间，毫秒时间戳
+  disk_directory: string; // 磁盘存储目录
+  creator_id: string; // 创建人uuid
+}
+
 export interface IssueDetail extends IssueItem {
   description: string;
   tag_list: IssueTag[] | null;
+  accessories: IssueAccessory[] | null;
 }
 
 export interface ListIssuesV4Response {

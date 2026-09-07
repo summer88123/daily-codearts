@@ -7,6 +7,7 @@ import {
   CustomFieldId,
   CurrentUserInfo,
   HuaweiCloudConfig,
+  IssueAccessory,
   IssueCommentV4,
   IssueDetail,
   IssueItem,
@@ -1091,22 +1092,63 @@ export class BusinessService {
   }
 
   /**
-   * 下载工作项中的图片并保存到系统缓存目录（已存在时直接复用缓存）
+   * 下载工作项中的图片并保存到指定路径（未指定时保存到系统缓存目录，已存在时直接复用缓存）
    * @param projectId 项目ID
    * @param imageUri 图片URI，issue 内容中为 /v2/upload 前缀，下载接口要求 /v1，自动替换
+   * @param filePath 可选的保存完整路径（含文件名），未指定时按 URI 相对路径存入缓存目录
    * @returns 图片本地文件路径
    */
-  async downloadIssueImage(projectId: string, imageUri: string): Promise<string> {
+  async downloadIssueImage(
+    projectId: string,
+    imageUri: string,
+    filePath?: string
+  ): Promise<string> {
     const normalizedUri = imageUri.replace('/v2/upload/', '/v1/upload/');
     const relativePath =
       normalizedUri.replace(/^\/v1\/upload\//, '') || path.basename(normalizedUri);
-    const targetPath = path.join(getCacheRootDir(), 'issue-images', relativePath);
+    const targetPath = filePath || path.join(getCacheRootDir(), 'issue-images', relativePath);
 
     if (fs.existsSync(targetPath) && fs.statSync(targetPath).size > 0) {
       return targetPath;
     }
 
     const response = await this.apiService.downloadImageFile(projectId, normalizedUri);
+    if (!response.success || !response.data || response.data.byteLength === 0) {
+      throw new Error(response.error || '未知错误');
+    }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.from(response.data));
+    return targetPath;
+  }
+
+  /**
+   * 下载工作项附件并保存到指定路径（未指定时保存到系统缓存目录，已存在时直接复用缓存）
+   * @param projectId 项目ID
+   * @param issueId 工作项ID
+   * @param accessory 附件信息，来自 issue 详情的 accessories 列表
+   * @param filePath 可选的保存完整路径（含文件名），未指定时存入缓存目录
+   * @returns 附件本地文件路径
+   */
+  async downloadIssueAttachment(
+    projectId: string,
+    issueId: number,
+    accessory: IssueAccessory,
+    filePath?: string
+  ): Promise<string> {
+    const targetPath =
+      filePath ||
+      path.join(getCacheRootDir(), 'issue-attachments', String(issueId), accessory.file_name);
+
+    if (fs.existsSync(targetPath) && fs.statSync(targetPath).size > 0) {
+      return targetPath;
+    }
+
+    const response = await this.apiService.downloadAttachment(
+      projectId,
+      issueId,
+      accessory.attachment_id
+    );
     if (!response.success || !response.data || response.data.byteLength === 0) {
       throw new Error(response.error || '未知错误');
     }

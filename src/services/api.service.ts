@@ -492,6 +492,26 @@ export class ApiService {
   }
 
   /**
+   * 下载工作项附件（返回二进制内容）
+   * @param projectId 项目ID
+   * @param issueId 工作项ID
+   * @param attachmentId 附件ID，issue 详情 accessories 列表中的 attachment_id
+   */
+  async downloadAttachment(
+    projectId: string,
+    issueId: number,
+    attachmentId: number
+  ): Promise<ApiResponse<ArrayBuffer>> {
+    return this.request<ArrayBuffer>(
+      `/v4/projects/${projectId}/issues/${issueId}/attachments/${attachmentId}`,
+      {
+        method: 'GET',
+        responseType: 'arraybuffer',
+      }
+    );
+  }
+
+  /**
    * 查询子工作项 (ListChildIssuesV4)
    * 获取指定工作项的所有子工作项
    *
